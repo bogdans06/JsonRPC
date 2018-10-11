@@ -18,92 +18,81 @@ class HttpClient
     /**
      * URL of the server
      *
-     * @access private
      * @var string
      */
-    private $url;
+    protected $url;
 
     /**
      * HTTP client timeout
      *
-     * @access private
      * @var integer
      */
-    private $timeout = 5;
+    protected $timeout = 5;
 
     /**
      * Default HTTP headers to send to the server
      *
-     * @access private
      * @var array
      */
-    private $headers = array(
+    protected $headers = [
         'User-Agent: JSON-RPC PHP Client <https://github.com/fguillot/JsonRPC>',
         'Content-Type: application/json',
         'Accept: application/json',
         'Connection: close',
-    );
+    ];
 
     /**
      * Username for authentication
      *
-     * @access private
      * @var string
      */
-    private $username;
+    protected $username;
 
     /**
      * Password for authentication
      *
-     * @access private
      * @var string
      */
-    private $password;
+    protected $password;
 
     /**
      * Enable debug output to the php error log
      *
-     * @access private
      * @var boolean
      */
-    private $debug = false;
+    protected $debug = false;
 
     /**
      * Cookies
      *
-     * @access private
      * @var array
      */
-    private $cookies = array();
+    protected $cookies = [];
 
     /**
      * SSL certificates verification
      *
-     * @access private
      * @var boolean
      */
-    private $verifySslCertificate = true;
+    protected $verifySslCertificate = true;
 
     /**
      * SSL client certificate
      *
-     * @access private
      * @var string
      */
-    private $sslLocalCert;
+    protected $sslLocalCert;
 
     /**
      * Callback called before the doing the request
      *
-     * @access private
      * @var Closure
      */
-    private $beforeRequest;
+    protected $beforeRequest;
 
     /**
      * HttpClient constructor
      *
-     * @access public
      * @param  string $url
      */
     public function __construct($url = '')
@@ -114,72 +103,76 @@ class HttpClient
     /**
      * Set URL
      *
-     * @access public
      * @param  string $url
+     *
      * @return $this
      */
     public function withUrl($url)
     {
         $this->url = $url;
+
         return $this;
     }
 
     /**
      * Set username
      *
-     * @access public
      * @param  string $username
+     *
      * @return $this
      */
     public function withUsername($username)
     {
         $this->username = $username;
+
         return $this;
     }
 
     /**
      * Set password
      *
-     * @access public
      * @param  string $password
+     *
      * @return $this
      */
     public function withPassword($password)
     {
         $this->password = $password;
+
         return $this;
     }
 
     /**
      * Set timeout
      *
-     * @access public
      * @param  integer $timeout
+     *
      * @return $this
      */
     public function withTimeout($timeout)
     {
         $this->timeout = $timeout;
+
         return $this;
     }
 
     /**
      * Set headers
      *
-     * @access public
      * @param  array $headers
+     *
      * @return $this
      */
     public function withHeaders(array $headers)
     {
         $this->headers = array_merge($this->headers, $headers);
+
         return $this;
     }
 
     /**
      * Set cookies
      *
-     * @access public
      * @param  array     $cookies
      * @param  boolean   $replace
      */
@@ -195,56 +188,56 @@ class HttpClient
     /**
      * Enable debug mode
      *
-     * @access public
      * @return $this
      */
     public function withDebug()
     {
         $this->debug = true;
+
         return $this;
     }
 
     /**
      * Disable SSL verification
      *
-     * @access public
      * @return $this
      */
     public function withoutSslVerification()
     {
         $this->verifySslCertificate = false;
+
         return $this;
     }
 
     /**
      * Assign a certificate to use TLS
      *
-     * @access public
      * @return $this
      */
     public function withSslLocalCert($path)
     {
         $this->sslLocalCert = $path;
+
         return $this;
     }
 
     /**
      * Assign a callback before the request
      *
-     * @access public
      * @param  Closure $closure
+     *
      * @return $this
      */
     public function withBeforeRequestCallback(Closure $closure)
     {
         $this->beforeRequest = $closure;
+
         return $this;
     }
 
     /**
      * Get cookies
      *
-     * @access public
      * @return array
      */
     public function getCookies()
@@ -255,29 +248,63 @@ class HttpClient
     /**
      * Do the HTTP request
      *
-     * @access public
-     * @throws ConnectionFailureException
      * @param  string   $payload
      * @param  string[] $headers Headers for this request
+     *
      * @return array
+     *
+     * @throws ConnectionFailureException
      */
-    public function execute($payload, array $headers = array())
+    public function execute($payload, array $headers = [])
     {
         if (is_callable($this->beforeRequest)) {
-            call_user_func_array($this->beforeRequest, array($this, $payload, $headers));
+            call_user_func_array($this->beforeRequest, [$this, $payload, $headers]);
         }
 
-        $stream = fopen(trim($this->url), 'r', false, $this->buildContext($payload, $headers));
+        if ($this->isCurlLoaded()) {
+            $ch = curl_init();
+            $requestHeaders = $this->buildHeaders($headers);
+            $headers = [];
+            curl_setopt_array($ch, [
+                CURLOPT_URL => trim($this->url),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => $this->timeout,
+                CURLOPT_MAXREDIRS => 2,
+                CURLOPT_SSL_VERIFYPEER => $this->verifySslCertificate,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $payload,
+                CURLOPT_HTTPHEADER => $requestHeaders,
+                CURLOPT_HEADERFUNCTION => function ($curl, $header) use (&$headers) {
+                    $headers[] = $header;
+                    return strlen($header);
+                }
+            ]);
 
-        if (! is_resource($stream)) {
-            throw new ConnectionFailureException('Unable to establish a connection');
+            if ($this->sslLocalCert !== null) {
+                curl_setopt($ch, CURLOPT_CAINFO, $this->sslLocalCert);
+            }
+
+            $response = curl_exec($ch);
+            curl_close($ch);
+
+            if ($response !== false) {
+                $response = json_decode($response, true);
+            } else {
+                throw new ConnectionFailureException('Unable to establish a connection');
+            }
+        } else {
+            $stream = fopen(trim($this->url), 'r', false, $this->buildContext($payload, $headers));
+
+            if (! is_resource($stream)) {
+                throw new ConnectionFailureException('Unable to establish a connection');
+            }
+
+            $metadata = stream_get_meta_data($stream);
+            $headers = $metadata['wrapper_data'];
+            $response = json_decode(stream_get_contents($stream), true);
+
+            fclose($stream);
         }
-
-        $metadata = stream_get_meta_data($stream);
-        $headers = $metadata['wrapper_data'];
-        $response = json_decode(stream_get_contents($stream), true);
-        
-        fclose($stream);
 
         if ($this->debug) {
             error_log('==> Request: '.PHP_EOL.(is_string($payload) ? $payload : json_encode($payload, JSON_PRETTY_PRINT)));
@@ -294,31 +321,17 @@ class HttpClient
     /**
      * Prepare stream context
      *
-     * @access private
      * @param  string   $payload
      * @param  string[] $headers
+     *
      * @return resource
      */
-    private function buildContext($payload, array $headers = array())
+    protected function buildContext($payload, array $headers = [])
     {
-        $headers = array_merge($this->headers, $headers);
+        $headers = $this->buildHeaders($headers);
 
-        if (! empty($this->username) && ! empty($this->password)) {
-            $headers[] = 'Authorization: Basic '.base64_encode($this->username.':'.$this->password);
-        }
-
-        if (! empty($this->cookies)){
-            $cookies = array();
-
-            foreach ($this->cookies as $key => $value) {
-                $cookies[] = $key.'='.$value;
-            }
-
-            $headers[] = 'Cookie: '.implode('; ', $cookies);
-        }
-
-        $options = array(
-            'http' => array(
+        $options = [
+            'http' => [
                 'method' => 'POST',
                 'protocol_version' => 1.1,
                 'timeout' => $this->timeout,
@@ -326,12 +339,12 @@ class HttpClient
                 'header' => implode("\r\n", $headers),
                 'content' => $payload,
                 'ignore_errors' => true,
-            ),
-            'ssl' => array(
+            ],
+            'ssl' => [
                 'verify_peer' => $this->verifySslCertificate,
-                'verify_peer_name' => $this->verifySslCertificate,
-            )
-        );
+                'verify_peer_name' => $this->verifySslCertificate
+            ]
+        ];
 
         if ($this->sslLocalCert !== null) {
             $options['ssl']['local_cert'] = $this->sslLocalCert;
@@ -343,10 +356,9 @@ class HttpClient
     /**
      * Parse cookies from response
      *
-     * @access private
      * @param  array $headers
      */
-    private function parseCookies(array $headers)
+    protected function parseCookies(array $headers)
     {
         foreach ($headers as $header) {
             $pos = stripos($header, 'Set-Cookie:');
@@ -370,19 +382,20 @@ class HttpClient
     /**
      * Throw an exception according the HTTP response
      *
-     * @access public
-     * @param  array   $headers
+     * @param array $headers
+     *
      * @throws AccessDeniedException
+     * @throws ConnectionFailureException
      * @throws ServerErrorException
      */
     public function handleExceptions(array $headers)
     {
-        $exceptions = array(
+        $exceptions = [
             '401' => '\JsonRPC\Exception\AccessDeniedException',
             '403' => '\JsonRPC\Exception\AccessDeniedException',
             '404' => '\JsonRPC\Exception\ConnectionFailureException',
             '500' => '\JsonRPC\Exception\ServerErrorException',
-        );
+        ];
 
         foreach ($headers as $header) {
             foreach ($exceptions as $code => $exception) {
@@ -391,5 +404,42 @@ class HttpClient
                 }
             }
         }
+    }
+
+    /**
+     * Tests if the curl extension is loaded
+     *
+     * @return bool
+     */
+    protected function isCurlLoaded()
+    {
+        return extension_loaded('curl');
+    }
+
+    /**
+     * Prepare Headers
+     *
+     * @param array $headers
+     *
+     * @return array
+     */
+    protected function buildHeaders(array $headers)
+    {
+        $headers = array_merge($this->headers, $headers);
+
+        if (!empty($this->username) && !empty($this->password)) {
+            $headers[] = 'Authorization: Basic ' . base64_encode($this->username . ':' . $this->password);
+        }
+
+        if (!empty($this->cookies)) {
+            $cookies = [];
+
+            foreach ($this->cookies as $key => $value) {
+                $cookies[] = $key . '=' . $value;
+            }
+
+            $headers[] = 'Cookie: ' . implode('; ', $cookies);
+        }
+        return $headers;
     }
 }
